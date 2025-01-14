@@ -1,5 +1,4 @@
 clc;clear;
-% write here 遗传算法 遗传算法存在若干要素与步骤，比如
 
 % parallel
 timestamp = datetime('now', 'TimeZone', 'UTC') - datetime('1970-01-01 00:00:00', 'TimeZone', 'UTC');
@@ -18,15 +17,24 @@ else
     disp(['Folder already exists: ', timestamp]);
 end
 
-%start(1, timestamp);
-parfor i=1:24
-    tic;start(i, timestamp);toc;
-    disp(['运行时间: ',num2str(toc)]);
+% 设置运行模式
+runmodel = 'once';
+switch runmodel
+    case 'once'
+        start(1, timestamp);
+    case 'para'
+        parfor i=1:8
+            tic;start(i, timestamp);toc;
+            disp(['运行时间: ',num2str(toc)]);
+        end
 end
+% 得到运行结果后进行比较并保存
+
+% 对结果进行绘图并保存数据
+% 保存的数据范围包括
 
 % functions
 function start(i, timestamp)
-
 mapWidth = 100;     % 地图的宽，即x轴长度
 mapHeight = 100;    % 地图的高，即y轴长度
 numPoints = 100;    % 传感器生成的点数
@@ -37,7 +45,6 @@ y = mapHeight * rand(numPoints, 1); % 1 行 numPoints 列
 points = [x, y];
 
 disp(num2str(i)+" number generate done");
-
 % 生成六边形网格并返回含有点的六边形中心列表及其对应的点列表
 hexHeight = sqrt(3) * radius;
 hexWidth = 2 * radius;
@@ -48,7 +55,6 @@ gridCols = ceil(mapWidth / (1.5 * radius));
 
 % 0 row 2 column 0 matrix
 planCenters = zeros(0, 2);
-
 planPoints = {};
 hexCenters = zeros(0, 2);
 
@@ -85,16 +91,19 @@ for row = 0:gridRows
 end
 disp(num2str(i)+" hexagon grid generate done");
 
+% 该程序段需要的参数包括：
+% 参与排序的列表： hexCenter
+% 地图的尺寸
 NP=50;             % 种群数目
-SAVE=20;            % 免疫种群数目
-G=1000;           % 最大免疫代数
+SAVE=20;           % 免疫种群数目
+G=1000;            % 最大免疫代数
 
 Cell = planCenters;
+[N, ~] = size(planCenters);
 Num=size(Cell,1);                     %TSP问题的规模,即城市数目
 Distance=zeros(Num);                  %任意两个城市距离间隔矩阵
 % 增加到起止两点的距离
 spec=zeros(Num,2);
-
 % 求任意两个城市距离间隔矩阵
 for i=1:Num
     for j=1:Num
@@ -105,13 +114,28 @@ for i=1:Num
 end
 
 pop=zeros(NP,Num);                    %用于存储种群
-poptemp = [];                         %种群更新中间存储
+poptemp = [];                        %种群更新中间存储
 for i=1:NP
     pop(i,:)=randperm(Num);           %随机生成初始种群
 end
 
+len=zeros(NP,1);                  %存储路径长度
+
+% 计算路径长度
+for i=1:NP
+    len(i,1)=spec(pop(i,1),1)+spec(pop(i,N),2);
+    for j=1:(N-1)
+        len(i,1)=len(i,1)+Distance(pop(i,j),pop(i,j+1));
+    end
+end
+
+% 选择操作
+[~, sortedIndices] = sort(len, 'descend');     % 对路径长度进行排序，并获取排序后的索引
+poptemp = pop(sortedIndices, :);    % 使用排序后的索引来重新排列原始的二维数组
+poptemp = poptemp(1:SAVE, :);
+
 % 最优结果存储
-bestpop = pop(1,:);                   
+bestpop = pop(1,:);
 bestlen = [G, 1];
 
 % 遗传算法循环
@@ -122,33 +146,20 @@ while gen<G
 
     % 计算路径长度
     for i=1:NP
-        len(i,1)=spec(f(i,1),1)+spec(f(i,N),2);
+        len(i,1)=spec(pop(i,1),1)+spec(pop(i,N),2);
         for j=1:(N-1)
-            len(i,1)=len(i,1)+Distance(f(i,j),f(i,j+1));
+            len(i,1)=len(i,1)+Distance(pop(i,j),pop(i,j+1));
         end
     end
 
-    [numRows, ~] = size(A);% 获取行数
-    pathLengths = zeros(numRows, 1);% 初始化一个一维数组来存储每行的路径长度
-    % 计算每行的路径长度
-    for i = 1:numRows
-        pathLengths(i) = sum(A(i, :)); % 计算每行非零元素的数量
-    end
-    [~, sortedIndices] = sort(pathLengths);     % 对路径长度进行排序，并获取排序后的索引
-    sortedA = A(sortedIndices, :);              % 使用排序后的索引来重新排列原始的二维数组
-    disp(sortedA);                              % 显示排序后的二维数组
-    rr = find(len==minlen);% 更新最短路径
-    bestpop = pop(rr(1,1),:);
     % 选择操作
-    nn = 0;
-    for i=1:NP
-        if fitness(i,1)>=randnum
-            nn = nn+1;
-            poptemp(nn,:)=pop(i,:);
-        end
-    end
-    aa = size(poptemp,1);
+    [~, sortedIndices] = sort(len, 'descend');     % 对路径长度进行排序，并获取排序后的索引
+    poptemp = pop(sortedIndices, :);    % 使用排序后的索引来重新排列原始的二维数组
+    poptemp = poptemp(1:SAVE, :);
+    nn = size(poptemp, 1);
 
+    %变异选择操作
+    aa = size(poptemp,1);
     while aa<NP
         nnper = randperm(nn);
         A = poptemp(nnper(1),:);
@@ -160,12 +171,8 @@ while gen<G
         for i =1:W
             x = find(A==B(p+i-1));
             y = find(B==A(p+i-1));
-            temp = A(p+i-1);
-            A(p+i-1) =B(p+i-1);
-            B(p+i-1) = temp;
-            temp = A(x);
-            A(x) = B(y);
-            B(y) = temp;
+            swap(A(p+i-1), B(p+i-1));
+            swap(A(x), B(y));
         end
 
         % 变异操作
@@ -175,12 +182,8 @@ while gen<G
             p1 = floor(1+Num*rand());
             p2 = floor(1+Num*rand());
         end
-        tmp = A(p1);
-        A(p1) = A(p2);
-        A(p2) = tmp;
-        tmp = B(p1);
-        B(p1) = B(p2);
-        B(p2) = tmp;
+        swap(A(p1), A(p2));
+        swap(B(p1), B(p2));
         poptemp = [poptemp;A;B];
         aa = size(poptemp, 1);
     end
@@ -224,5 +227,11 @@ saveas(gcf, filePath2);  % 或者使用 print(gcf, '-dpng', filename2);
 
 disp(num2str(i)+" path generate done");
 % draw(hexCenters, planCenters, points, planPoints, path);
+end
+
+function [A, B] = swap(A, B)
+temp = A;
+A = B;
+B = temp;
 end
 
