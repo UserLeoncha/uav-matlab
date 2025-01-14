@@ -1,11 +1,13 @@
 clc;clear;
-%% write here
-% 遗传算法
-% 遗传算法存在若干要素与步骤，比如
-%
 
-%% parallel
-timestamp = timestamp_generate();
+% parallel
+timestamp = datetime('now', 'TimeZone', 'UTC') - datetime('1970-01-01 00:00:00', 'TimeZone', 'UTC');
+timestamp = seconds(timestamp);
+% 将时间戳转换为日期时间对象
+dt = datetime(timestamp, 'ConvertFrom', 'posixtime');
+% 格式化日期时间为所需字符串格式
+timestamp = sprintf('%04d%02d%02d%02d%02d', ...
+    year(dt), month(dt), day(dt), hour(dt), minute(dt));
 
 % 构建完整路径
 if ~exist(timestamp, 'dir')
@@ -15,303 +17,194 @@ else
     disp(['Folder already exists: ', timestamp]);
 end
 
-%start(1, timestamp);
-
-parfor i=1:24
-   tic;start(i, timestamp);toc;
-   disp(['运行时间: ',num2str(toc)]);
+% 设置运行模式
+runmodel = 'once';
+switch runmodel
+    case 'once'
+        start(1, timestamp);
+    case 'para'
+        parfor i=1:8
+            tic;start(i, timestamp);toc;
+            disp(['运行时间: ',num2str(toc)]);
+        end
 end
+% 得到运行结果后进行比较并保存
 
+% 对结果进行绘图并保存数据
+% 保存的数据范围包括
 
-%% functions
+% functions
 function start(i, timestamp)
-
-Gpoints = 'uniform';  % 节点生成方式 clustered uniform
-
 mapWidth = 100;     % 地图的宽，即x轴长度
 mapHeight = 100;    % 地图的高，即y轴长度
 numPoints = 100;    % 传感器生成的点数
 radius = 5;         % 六边形栅格的边长
-% speed = 1;        % 无人机运行的速度
 
-% generate data
-% 2 row 100 column
-switch Gpoints
-    case 'clustered'
-        points = generate_clustered_points(mapWidth, mapHeight, numPoints);
-    case 'uniform'
-        points = generate_uniform_points(mapWidth, mapHeight, numPoints);
-end
+x = mapWidth * rand(numPoints, 1);  % 1 行 numPoints 列
+y = mapHeight * rand(numPoints, 1); % 1 行 numPoints 列
+points = [x, y];
+
 disp(num2str(i)+" number generate done");
+% 生成六边形网格并返回含有点的六边形中心列表及其对应的点列表
+hexHeight = sqrt(3) * radius;
+hexWidth = 2 * radius;
 
-% generate hexagon
-[hexCenters, planCenters, planPoints] = hexagon_grid_generator(points, radius, mapWidth, mapHeight);
+% get hexagon row and column
+gridRows = ceil(mapHeight / hexHeight);
+gridCols = ceil(mapWidth / (1.5 * radius));
+
+% 0 row 2 column 0 matrix
+planCenters = zeros(0, 2);
+planPoints = {};
+hexCenters = zeros(0, 2);
+
+for row = 0:gridRows
+    for col = 0:gridCols
+        cx = col * 1.5 * radius;
+        if mod(col, 2) == 0
+            cy = row * hexHeight;
+        else
+            cy = row * hexHeight + hexHeight / 2;
+        end
+
+        % 存储当前六边形内的点
+        currentHexPoints = [];
+
+        % 检查是否有点位于六边形内
+        for i = 1:size(points, 1)
+            dx = points(i,1) - cx;
+            dy = points(i,2) - cy;
+            % 使用六边形的几何特性来检查点是否在六边形内
+            if abs(dy) <= hexHeight/2 && abs(dx) <= radius && (abs(dy) + abs(sqrt(3)*dx)) <= hexHeight
+                currentHexPoints = [currentHexPoints; points(i,1), points(i, 2)];
+            end
+        end
+        % each hexagon center
+        hexCenters = [hexCenters; cx, cy];
+
+        if ~isempty(currentHexPoints)
+            % 如果当前六边形中有点，则将六边形中心添加到 hexCenters 中 并将当前六边形的点添加到 hexPoints
+            planCenters = [planCenters; cx, cy];
+            planPoints = [planPoints; currentHexPoints];
+        end
+    end
+end
 disp(num2str(i)+" hexagon grid generate done");
 
-%path = gpuga(planCenters, timestamp);
-path = advancega(planCenters, timestamp);
+% 该程序段需要的参数包括：
+% 参与排序的列表： hexCenter
+% 地图的尺寸
+NP=50;             % 种群数目
+SAVE=20;           % 免疫种群数目
+G=1000;            % 最大免疫代数
 
-disp(num2str(i)+" path generate done");
-% draw(hexCenters, planCenters, points, planPoints, path);
-end
-
-%gpuga
-function path = gpuga(planCenters, timestamp)
-%% create the value space
-NP=200;                         % 免疫个体数目
-Generation=10000;              % 最大免疫代数
-
-City = gpuArray(planCenters);   % 将 planCenters 转换为 gpuarray
-Num = size(City,1);             % 城市数量
-Distance = gpuArray.zeros(Num, Num); % 在GPU上预分配距离矩阵 D
-spec = gpuArray.zeros(Num, 2); % 在GPU上预分配 spec 矩阵
-
-% 在GPU上计算距离矩阵
-for i = 1:Num
-    for j = 1:Num
-        Distance(i,j) = sqrt((City(i,1) - City(j,1))^2 + (City(i,2) - City(j,2))^2);
+Cell = planCenters;
+[N, ~] = size(planCenters);
+Num=size(Cell,1);                     %TSP问题的规模,即城市数目
+Distance=zeros(Num);                  %任意两个城市距离间隔矩阵
+% 增加到起止两点的距离
+spec=zeros(Num,2);
+% 求任意两个城市距离间隔矩阵
+for i=1:Num
+    for j=1:Num
+        Distance(i,j)=((Cell(i,1)-Cell(j,1))^2+(Cell(i,2)-Cell(j,2))^2)^0.5;
     end
-    spec(i,1) = sqrt(City(i,1)^2 + City(i,2)^2);
-    spec(i,2) = sqrt((City(i,1) - 100)^2 + (City(i,2) - 100)^2);
+    spec(i,1)=(Cell(i,1)^2+Cell(i,2)^2)^0.5;
+    spec(i,2)=((Cell(i,1)-100)^2+(Cell(i,2)-100)^2)^0.5;
 end
 
-% 将 f 和 F 转换为 gpuarray
-pop = gpuArray.zeros(NP, Num); % 种群存储
-temppop = gpuArray([]); % 种群更新中间存储
-
-bestpop = gpuArray.zeros(Generation, NP);
-bestnum = gpuArray.zeros(Generation, 1);
-
-% 在GPU上预分配 fitness 矩阵
-fitness = gpuArray.zeros(NP, 1); 
-
-%% value init
-% 在GPU上随机生成初始种群
-for i = 1:NP
-    pop(i,:) = gpuArray.randperm(Num);
+pop=zeros(NP,Num);                    %用于存储种群
+poptemp = [];                        %种群更新中间存储
+for i=1:NP
+    pop(i,:)=randperm(Num);           %随机生成初始种群
 end
-bestpop = pop(1,:); % 存储最优种群
-bestnum(1, :) = 0;
-%% begin the evolve
-gen = 0;
+
+len=zeros(NP,1);                  %存储路径长度
+
+% 计算路径长度
+for i=1:NP
+    len(i,1)=spec(pop(i,1),1)+spec(pop(i,N),2);
+    for j=1:(N-1)
+        len(i,1)=len(i,1)+Distance(pop(i,j),pop(i,j+1));
+    end
+end
+
+% 选择操作
+[~, sortedIndices] = sort(len, 'descend');     % 对路径长度进行排序，并获取排序后的索引
+poptemp = pop(sortedIndices, :);    % 使用排序后的索引来重新排列原始的二维数组
+poptemp = poptemp(1:SAVE, :);
+
+% 最优结果存储
+bestpop = pop(1,:);
+bestlen = [G, 1];
+
 % 遗传算法循环
-while gen < Generation
-    %% find the best group
-    % 在GPU上计算路径长度
-    len = advleng(NP, Distance, spec, Num, pop);
-    
-    % 在GPU上找到最大和最小长度
-    maxlen = max(len);
-    minlen = min(len);
-    
-    % 在GPU上更新最优路径
-    rr = find(len == minlen);
-    bestpop = pop(rr(1),:);
-    
-    %% select the wonderful group
-    % 在GPU上计算归一化适应度
-    fitness = 1 - ((len - minlen) / (maxlen - minlen + 0.001));
-    
-    % 在GPU上进行选择操作
-    nn = 0;
-    for i = 1:NP
-        if fitness(i) >= gpuArray.rand()
-            nn = nn + 1;
-            temppop(nn,:) = pop(i,:);
-        end
-    end
-    aa = size(F, 1);
-    
-    % 在GPU上进行交叉和变异操作
-    while aa < NP
-        % 在GPU上随机排列选择
-        nnper = gpuArray.randperm(nn);
-        A = temppop(nnper(1),:);
-        B = temppop(nnper(2),:);
-        
-        % 在GPU上进行交叉操作
-        W = ceil(Num / 10);
-        pp = unidrnd(Num - W + 1);
-        p = gpuArray(pp);
-        for i = 1:W
-            x = find(A == B(p + i - 1));
-            y = find(B == A(p + i - 1));
-            temp = A(p+i-1);
-                A(p+i-1) =B(p+i-1);
-                B(p+i-1) = temp;
-                temp = A(x);
-                A(x) = B(y);
-                B(y) = temp;
-        end
-        
-        % 在GPU上进行变异操作
-        p1 = floor(1 + Num * gpuArray.rand());
-        p2 = floor(1 + Num * gpuArray.rand());
-        while p1 == p2
-            p1 = floor(1 + Num * gpuArray.rand());
-            p2 = floor(1 + Num * gpuArray.rand());
-        end
-        tmp = A(p1);
-            A(p1) = A(p2);
-            A(p2) = tmp;
-            tmp = B(p1);
-            B(p1) = B(p2);
-            B(p2) = tmp;
-            F = [F;A,B];
+gen = 0;
+while gen<G
+    % rank the length fix advancelen
+    len=zeros(NP,1);                  %存储路径长度
 
-            aa = size(F, 1);
+    % 计算路径长度
+    for i=1:NP
+        len(i,1)=spec(pop(i,1),1)+spec(pop(i,N),2);
+        for j=1:(N-1)
+            len(i,1)=len(i,1)+Distance(pop(i,j),pop(i,j+1));
+        end
     end
-    if aa > NP
-        temppop = temppop(1:NP,:);
+
+    % 选择操作
+    [~, sortedIndices] = sort(len, 'descend');     % 对路径长度进行排序，并获取排序后的索引
+    poptemp = pop(sortedIndices, :);    % 使用排序后的索引来重新排列原始的二维数组
+    poptemp = poptemp(1:SAVE, :);
+    nn = size(poptemp, 1);
+
+    %变异选择操作
+    aa = size(poptemp,1);
+    while aa<NP
+        nnper = randperm(nn);
+        A = poptemp(nnper(1),:);
+        B = poptemp(nnper(2),:);
+
+        % 交叉操作
+        W = ceil(Num/10);     % 交叉点个数
+        p = unidrnd(Num-W+1);   % 随机选择交叉范围，从p到p+W
+        for i =1:W
+            x = find(A==B(p+i-1));
+            y = find(B==A(p+i-1));
+            swap(A(p+i-1), B(p+i-1));
+            swap(A(x), B(y));
+        end
+
+        % 变异操作
+        p1 = floor(1+Num*rand());
+        p2 = floor(1+Num*rand());
+        while p1==p2
+            p1 = floor(1+Num*rand());
+            p2 = floor(1+Num*rand());
+        end
+        swap(A(p1), A(p2));
+        swap(B(p1), B(p2));
+        poptemp = [poptemp;A;B];
+        aa = size(poptemp, 1);
     end
-    pop = temppop;
-    pop(1,:) = bestpop;
-    clear temppop;
-    gen = gen + 1;
-    bestnum(gen) = minlen;
+    if aa>NP
+        poptemp = poptemp(1:NP,:);        % 保持种群规模为NP
+    end
+    pop = poptemp;                    % 更新种群
+    pop(1,:) = bestpop;               % 保留每代最优个体
+    clear poptemp;
+    gen = gen+1;
+    bestlen(gen) = minlen;
 end
 
-% 将路径结果从GPU传输回CPU
-path = gather(bestpop);
+path = bestpop;
 
 % 创建第一个图形窗口
 figure;
 for i = 1:Num-1
-    plot([City(bestpop(i),1), City(bestpop(i+1),1)], [City(bestpop(i),2), City(bestpop(i+1),2)], 'bo-');
+    plot([Cell(bestpop(i),1), Cell(bestpop(i+1),1)], [Cell(bestpop(i),2), Cell(bestpop(i+1),2)], 'bo-');
     hold on;
 end
-plot([City(bestpop(Num),1), City(bestpop(1),1)], 'ro-');
-plot([City(bestpop(Num),2), City(bestpop(1),2)], 'ro-');
-title(['优化最短距离：', num2str(minlen)]);
-hold off;
-
-% 为第一张图生成文件名并保存
-filename1 = sprintf('Path_NP%d_G%d_Iter%d.png', NP, Generation, i);
-filePath1 = fullfile(timestamp, filename1);
-saveas(gcf, filePath1);  % 或者使用 print(gcf, '-dpng', filename1);
-
-% 创建第二个图形窗口
-figure;
-plot(bestnum);
-xlabel('迭代次数');
-ylabel('目标函数值');
-title('适应度进化曲线');
-
-% 为第二张图生成文件名并保存
-filename2 = sprintf('Fitness_NP%d_G%d_Iter%d.png', NP, Generation, i);
-filePath2 = fullfile(timestamp, filename2);
-saveas(gcf, filePath2);  % 或者使用 print(gcf, '-dpng', filename2);
-
-end
-
-% advancedga
-function path = advancega(planCenters, timestamp)
-NP=500;             % 免疫个体数目
-G=1000000;           % 最大免疫代数
-randnum = 0.7;
-    C = planCenters;
-    N=size(C,1);                     %TSP问题的规模,即城市数目
-    D=zeros(N);                      %任意两个城市距离间隔矩阵
-    % 增加到起止两点的距离
-    spec=zeros(N,2);
-    % 求任意两个城市距离间隔矩阵
-    for i=1:N
-        for j=1:N
-            D(i,j)=((C(i,1)-C(j,1))^2+(C(i,2)-C(j,2))^2)^0.5;
-        end
-        spec(i,1)=(C(i,1)^2+C(i,2)^2)^0.5;
-        spec(i,2)=((C(i,1)-100)^2+(C(i,2)-100)^2)^0.5;
-    end
-    
-    f=zeros(NP,N);                    %用于存储种群
-    F = [];                           %种群更新中间存储
-    for i=1:NP
-        f(i,:)=randperm(N);           %随机生成初始种群
-    end
-    R = f(1,:);                       %存储最优种群
-    
-    fitness = zeros(NP,1);            %存储归一化适应度值
-    gen = 0;
- 
-    % 遗传算法循环
-    while gen<G
-        % advancelen
-        len = advleng(NP,D,spec,N,f);
-        maxlen = max(len); 
-        minlen = min(len);
-        
-        % 更新最短路径
-        rr = find(len==minlen);
-        R = f(rr(1,1),:);
-    
-        % 计算归一化适应度
-        for i =1:length(len)
-            fitness(i,1) = (1-((len(i,1)-minlen)/(maxlen-minlen+0.001)));
-        end
-        
-        % 选择操作
-        nn = 0;
-        for i=1:NP
-            if fitness(i,1)>=randnum
-                nn = nn+1;
-                F(nn,:)=f(i,:);
-            end
-        end
-        [aa,bb] = size(F);
-       
-        while aa<NP
-            nnper = randperm(nn);
-            A = F(nnper(1),:);
-            B = F(nnper(2),:);
-        
-            % 交叉操作
-            W = ceil(N/10);     % 交叉点个数
-            p = unidrnd(N-W+1);   % 随机选择交叉范围，从p到p+W
-            for i =1:W
-                x = find(A==B(p+i-1));
-                y = find(B==A(p+i-1));
-                temp = A(p+i-1);
-                A(p+i-1) =B(p+i-1);
-                B(p+i-1) = temp;
-                temp = A(x);
-                A(x) = B(y);
-                B(y) = temp;
-            end
-        
-            % 变异操作
-            p1 = floor(1+N*rand());
-            p2 = floor(1+N*rand());
-            while p1==p2
-               p1 = floor(1+N*rand());
-               p2 = floor(1+N*rand());
-            end
-            tmp = A(p1);
-            A(p1) = A(p2);
-            A(p2) = tmp;
-            tmp = B(p1);
-            B(p1) = B(p2);
-            B(p2) = tmp;
-            F = [F;A;B];
-            [aa,bb] = size(F);
-        end
-        if aa>NP
-            F = F(1:NP,:);        % 保持种群规模为NP
-        end
-    f = F;                    % 更新种群
-    f(1,:) = R;               % 保留每代最优个体
-    clear F;
-    gen = gen+1;
-    Rlength(gen) = minlen;
-    end
-path = R;
-
-% 创建第一个图形窗口
-figure;
-for i = 1:N-1
-    plot([C(R(i),1), C(R(i+1),1)], [C(R(i),2), C(R(i+1),2)], 'bo-');
-    hold on;
-end
-
 title(['优化最短距离：', num2str(minlen)]);
 hold off;
 
@@ -322,7 +215,7 @@ saveas(gcf, filePath1);  % 或者使用 print(gcf, '-dpng', filename1);
 
 % 创建第二个图形窗口
 figure;
-plot(Rlength);
+plot(bestlen);
 xlabel('迭代次数');
 ylabel('目标函数值');
 title('适应度进化曲线');
@@ -332,172 +225,13 @@ filename2 = sprintf('Fitness_NP%d_G%d_Iter%d.png', NP, G, i);
 filePath2 = fullfile(timestamp, filename2);
 saveas(gcf, filePath2);  % 或者使用 print(gcf, '-dpng', filename2);
 
+disp(num2str(i)+" path generate done");
+% draw(hexCenters, planCenters, points, planPoints, path);
 end
 
-% advance path length function
-% calculute the path length
-function len = advleng(NP,D,spec,N,f)
-    len=zeros(NP,1);                  %存储路径长度
-    
-    % 计算路径长度
-    for i=1:NP
-        len(i,1)=spec(f(i,1),1)+spec(f(i,N),2);
-        for j=1:(N-1)
-            len(i,1)=len(i,1)+D(f(i,j),f(i,j+1));
-        end
-    end
-end
-
-% draw the points and hexagons
-function draw(hexCenters, planCenters, points, planPoints, path)
-    % use the plot function to draw the image, need use different color to 
-    % draw the hexagon girds and the points on the grid
-    
-    % draw all the points
-    plot(points, 'r+', 'MarkerSize', 10);
-    
-    % draw the grid points
-    plot(planCenters);
-    
-    % draw all the grids
-    for i = 1:size(hexCenters, 1)
-        fill(hexCenters(i,1) + cos(0:pi/3:2*pi), hexCenters(i,2) + sin(0:pi/3:2*pi), 'w', 'EdgeColor', 'black');
-    end
-    
-    % draw the plan grids
-    for i = 1:size(planPoints, 1)
-        scatter(planPoints(i,1), planPoints(i,2), 'r', 'filled');
-    end
-    
-    print("-dpng", "myPlot.png");
-end
-
-% draw path image
-function show_path_map(hexCenters, points, optimalPath, totalDistance, totalTime)
-    figure;
-    hold on;
-    
-    % 绘制六边形网格
-    for i = 1:size(hexCenters, 1)
-        fill(hexCenters(i,1) + cos(0:pi/3:2*pi), hexCenters(i,2) + sin(0:pi/3:2*pi), 'w', 'EdgeColor', 'black');
-    end
-    
-    % 绘制含有传感器的六边形
-    for i = 1:size(points, 1)
-        scatter(points(i,1), points(i,2), 'r', 'filled');
-    end
-    
-    % 绘制无人机路径
-    plot(optimalPath(:,1), optimalPath(:,2), 'g-', 'LineWidth', 2);
-    print('myPlot', '-dpng');  % 保存为PNG图像
-    scatter(optimalPath(:,1), optimalPath(:,2), 80, 'g', 'filled');
-    
-    % 显示总路程和时间
-    text(50, -10, sprintf('Total Distance: %.2f, Total Time: %.2f', totalDistance, totalTime), 'FontSize', 12, 'Color', 'black', 'FontWeight', 'bold');
-    
-    hold off;
-end
-
-% generate hexagon gird
-function [hexCenters, planCenters, planPoints] = hexagon_grid_generator(points, radius, mapWidth, mapHeight)
-    % 生成六边形网格并返回含有点的六边形中心列表及其对应的点列表
-    hexHeight = sqrt(3) * radius;
-    hexWidth = 2 * radius;
-    
-    % get hexagon row and column
-    gridRows = ceil(mapHeight / hexHeight);
-    gridCols = ceil(mapWidth / (1.5 * radius));
-    
-    % 0 row 2 column 0 matrix
-    planCenters = zeros(0, 2);
-
-    planPoints = {};
-    hexCenters = zeros(0, 2);
-    
-    for row = 0:gridRows
-        for col = 0:gridCols
-            cx = col * 1.5 * radius;
-            if mod(col, 2) == 0
-                cy = row * hexHeight;
-            else
-                cy = row * hexHeight + hexHeight / 2;
-            end
-            
-            % 存储当前六边形内的点
-            currentHexPoints = [];
-            
-            % 检查是否有点位于六边形内
-            for i = 1:size(points, 1)
-                dx = points(i,1) - cx;
-                dy = points(i,2) - cy;
-                % 使用六边形的几何特性来检查点是否在六边形内
-                if abs(dy) <= hexHeight/2 && abs(dx) <= radius && (abs(dy) + abs(sqrt(3)*dx)) <= hexHeight
-                    currentHexPoints = [currentHexPoints; points(i,1), points(i, 2)];
-                end
-            end
-            % each hexagon center
-            hexCenters = [hexCenters; cx, cy];
-
-            if ~isempty(currentHexPoints)
-                % 如果当前六边形中有点，则将六边形中心添加到 hexCenters 中
-                % 并将当前六边形的点添加到 hexPoints
-                planCenters = [planCenters; cx, cy];
-                planPoints = [planPoints; currentHexPoints];
-            end
-         end
-    end
-end
-
-% generate clustered points
-function points = generate_clustered_points(mapWidth, mapHeight, numPoints)
-%GENERATE_CLUSTERED_POINTS 聚类分布
-% 生成聚类分布的随机点，返回值为多行两列的矩阵
-    numClusters = randi([2, 5]);  % 随机生成 2-5 个聚类
-    clusterStdX = mapWidth / 10;  % 聚类的标准差（控制聚类点的分布范围）
-    clusterStdY = mapHeight / 10;
-    
-    points = [];
-    remainingPoints = numPoints;
-    for i = 1:numClusters
-        clusterCenterX = mapWidth * rand;
-        clusterCenterY = mapHeight * rand;
-        
-        if i == numClusters
-            % 确保最后一个聚类填满所有剩余点
-            clusterSize = remainingPoints;
-        else
-            % 随机分配每个聚类的大小
-            clusterSize = randi([1, remainingPoints - (numClusters - i)]);
-        end
-        
-        remainingPoints = remainingPoints - clusterSize;
-        
-        % 生成聚类内的点
-        x = clusterCenterX + randn(1, clusterSize) * clusterStdX;  % 1 行 clusterSize 列
-        y = clusterCenterY + randn(1, clusterSize) * clusterStdY;  % 1 行 clusterSize 列
-        points = [points; [x', y']];  % 按行追加点，最终为多行两列
-    end
-end
-
-% generate uniform points
-function points = generate_uniform_points(mapWidth, mapHeight, numPoints)
-% GENERATE_UNIFORM_POINTS 
-% return 100 row 2 column
-    x = mapWidth * rand(1, numPoints);  % 1 行 numPoints 列
-    y = mapHeight * rand(1, numPoints); % 1 行 numPoints 列
-    points = [x', y'];
-end
-
-function formattedString = timestamp_generate()
-%TIMSTAMP_GENERATE 此处显示有关此函数的摘要
-%   此处显示详细说明
-% 设置输出格式
-timestamp = datetime('now', 'TimeZone', 'UTC') - datetime('1970-01-01 00:00:00', 'TimeZone', 'UTC');
-timestamp = seconds(timestamp);
-% 将时间戳转换为日期时间对象
-dt = datetime(timestamp, 'ConvertFrom', 'posixtime');
-% 格式化日期时间为所需字符串格式
-formattedString = sprintf('%04d%02d%02d%02d%02d', ...
-    year(dt), month(dt), day(dt), hour(dt), minute(dt));
+function [A, B] = swap(A, B)
+temp = A;
+A = B;
+B = temp;
 end
 
